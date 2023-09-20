@@ -14,8 +14,8 @@ using System.Windows.Forms;
 namespace sand_box {
     public partial class Form1 : Form {
 
-        const int CANVAS_SIZE_X = 320; // has to be power of 2
-        const int CANVAS_SIZE_Y = 240; // has to be power of 2
+        const int CANVAS_SIZE_X = 320; 
+        const int CANVAS_SIZE_Y = 180;
         const int zoomFactor = 3;
 
         Random rnd = new Random();
@@ -23,17 +23,19 @@ namespace sand_box {
         [DebuggerDisplay("{ToString()}")]
         struct Particle {
             public Material material;
-            public bool wasUpdated;
-
+  
             public override string ToString() {
-                return material.ToString() + " " + wasUpdated.ToString();
+                return material.ToString();
             }
         }
 
         enum Material {
             EMPTY = 0,
+            WATER,
             SAND,
-            WATER
+            SAND_STEEP,
+            SAND_LONG_SETTLE,
+            STEEL
         }
 
         private enum ScrollSpeed {
@@ -59,7 +61,6 @@ namespace sand_box {
         private void Form1_Load(object sender, EventArgs e) {
             cBSimSpeed.DataSource = Enum.GetNames(typeof(ScrollSpeed));
             cBParticleType.DataSource = Enum.GetNames(typeof(Material));
-            initRandoms();
         }
 
         // https://stackoverflow.com/questions/11456440/how-to-resize-a-bitmap-image-in-c-sharp-without-blending-or-filtering
@@ -67,6 +68,7 @@ namespace sand_box {
             Bitmap result = new Bitmap(width, height);
             using (Graphics g = Graphics.FromImage(result)) {
                 g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half; // to have true 'NearestNeighbor' on the right boundaries
                 g.DrawImage(sourceBMP, 0, 0, width, height);
             }
             return result;
@@ -91,21 +93,28 @@ namespace sand_box {
                     switch (canvas[x, y].material) {
                         case Material.EMPTY:
                             linearDisplayBuff[cntr++] = unchecked((int)0xFF000000); // ARGB
-                            // wasUpdated stays true, so we don't need to bother with it
-                            canvas[x, y].wasUpdated = true;
+                            break;
+
+                        case Material.STEEL:
+                            linearDisplayBuff[cntr++] = unchecked((int)0xFF808080); // ARGB
                             break;
 
                         case Material.SAND:
                             linearDisplayBuff[cntr++] = unchecked((int)0xFFFFA81A); // ARGB
-                            canvas[x, y].wasUpdated = false;
+                            break;
+
+                        case Material.SAND_STEEP:
+                            linearDisplayBuff[cntr++] = unchecked((int)0xFFFF781A); // ARGB
+                            break;
+
+                        case Material.SAND_LONG_SETTLE:
+                            linearDisplayBuff[cntr++] = unchecked((int)0xFFAF781A); // ARGB
                             break;
 
                         case Material.WATER:
                             linearDisplayBuff[cntr++] = unchecked((int)0xFF0080FF); // ARGB
-                            canvas[x, y].wasUpdated = false;
                             break;
                     }
-
                 }
             }
 
@@ -127,7 +136,6 @@ namespace sand_box {
                 timer1.Start();
                 Console.WriteLine(timer1.Interval);
             }
-
         }
 
         private bool isCoordOnCanvas(int x, int y) {
@@ -147,7 +155,9 @@ namespace sand_box {
             
             switch (askingMAterial) {
                 case Material.SAND:
-                    return canvas[x, y].material != Material.SAND;
+                case Material.SAND_STEEP:
+                case Material.SAND_LONG_SETTLE:
+                    return canvas[x, y].material == Material.EMPTY || canvas[x, y].material == Material.WATER;
                 case Material.WATER:
                     return canvas[x, y].material == Material.EMPTY;
             }
@@ -156,96 +166,94 @@ namespace sand_box {
         }
 
 
+
+
         void evaluatePixel(int x, int y) {
 
-            if (canvas[x, y].wasUpdated == false) {
-
-                int yOffset = 999;
-                switch (canvas[x, y].material) {
-                    case Material.EMPTY:
-                        return;
-                    case Material.SAND:
-                        yOffset = rnd.Next(1, 5);
-                        break;
-                    case Material.WATER:
-                        yOffset = 0;
-                        break;
-                }
 
 
-                // down has priority
-                if (isEmpty(x, y + 1, canvas[x, y].material)) {
-                    // swap the two particles
-                    Particle ptcl = canvas[x, y];
-                    ptcl.wasUpdated = true;
-
-                    canvas[x, y] = canvas[x, y + 1];
-                    canvas[x, y + 1] = ptcl;
+            int yOffset = 999;
+            switch (canvas[x, y].material) {
+                case Material.EMPTY:
+                case Material.STEEL:
                     return;
-                }
+                case Material.SAND:
+                    yOffset = 1; // increasing this number makes the piles steeper
+                    break;
+                case Material.SAND_STEEP:
+                    yOffset = 3; // increasing this number makes the piles steeper
+                    break;
+                case Material.SAND_LONG_SETTLE:
+                    // making the offset randomized makes the pile to move (settle) even after no more sand is being poured in
+                    yOffset = rnd.Next(2, 16);
 
-                // else calculate the right and left
-                bool canGoRight = isEmpty(x + 1, y + yOffset, canvas[x, y].material);
-                bool canGoLeft = isEmpty(x - 1, y + yOffset, canvas[x, y].material);
+                    // below one looks better but is lot more expensive to calc
+                    // yOffset = (int)Math.Round(2.0 + Math.Sqrt(rnd.NextDouble()) * 2.0);
+                    break;
+                case Material.WATER:
+                    yOffset = 0; // next to the particle
+                    break;
+            }
 
+            // down has priority
+            if (isEmpty(x, y + 1, canvas[x, y].material)) {
+                // swap the two particles
+                Particle ptcl = canvas[x, y];
 
-                if (canGoRight && canGoLeft) {
-                    // to reduce the movement noise stop moving back and forth in empty space
-                    // on the other hand allow with low probability to overcome stacking (if sand comes through)
-                    if ((canvas[x, y].material == Material.WATER) && (rnd.NextDouble() > 0.01)) {
-                        canGoRight = false;
-                        canGoLeft = false;
-                    } else {
-                        int dice = rnd.Next(2);
-                        canGoRight = (dice == 0);
-                        canGoLeft = (dice != 0);
-                    }
-                }
+                canvas[x, y] = canvas[x, y + 1];
+                canvas[x, y + 1] = ptcl;
+                return;
+            }
 
-                if (canGoRight) {
-                    // swap the two particles
-                    Particle ptcl = canvas[x, y];
-                    ptcl.wasUpdated = true;
+            // else calculate the right and left
+            bool canGoRight = true;
+            bool canGoLeft = true;
 
-                    canvas[x, y] = canvas[x + 1, y + yOffset];
-                    canvas[x + 1, y + yOffset] = ptcl;
-                }
+            Material currentMaterial = canvas[x, y].material;
+            int currOffset = 0;
+            while (canGoRight && currOffset <= yOffset) {
+                canGoRight &= isEmpty(x + 1, y + currOffset, currentMaterial);
+                currOffset++;
+            }
 
-                if (canGoLeft) {
-                    // swap the two particles
-                    Particle ptcl = canvas[x, y];
-                    ptcl.wasUpdated = true;
+            currOffset = 0;
+            while (canGoLeft && currOffset <= yOffset) {
+                canGoLeft &= isEmpty(x - 1, y + currOffset, currentMaterial);
+                currOffset++;
+            }
 
-                    canvas[x, y] = canvas[x - 1, y + yOffset];
-                    canvas[x - 1, y + yOffset] = ptcl;
+            if (canGoRight && canGoLeft) {
+                // to reduce the movement noise stop moving back and forth in empty space
+                // on the other hand allow with low probability to overcome stacking (if sand comes through)
+                if ((canvas[x, y].material == Material.WATER) && (rnd.NextDouble() > 0.01)) {
+                    canGoRight = false;
+                    canGoLeft = false;
+                } else {
+                    int dice = rnd.Next(2);
+                    canGoRight = (dice == 0);
+                    canGoLeft = (dice != 0);
                 }
             }
+
+            if (canGoRight) {
+                // swap the two particles
+                Particle ptcl = canvas[x, y];
+
+                canvas[x, y] = canvas[x + 1, y];
+                canvas[x + 1, y] = ptcl;
+            }
+
+            if (canGoLeft) {
+                // swap the two particles
+                Particle ptcl = canvas[x, y];
+
+                canvas[x, y] = canvas[x - 1, y];
+                canvas[x - 1, y] = ptcl;
+            }
+
         }
 
-
-
-        Point[] randIndexes = new Point[CANVAS_SIZE_X * CANVAS_SIZE_Y];
-        void initRandoms() {
-            // fill in the list with all the indexes
-            List<Point> indexes = new List<Point>();
-            for (int x = 0; x < CANVAS_SIZE_X; ++x) {
-                for (int y = 0; y < CANVAS_SIZE_Y; ++y) {
-                    indexes.Add(new Point(x, y));
-                }
-            }
-
-            // now randomly chose a coord
-            for (int id = 0; id < CANVAS_SIZE_X * CANVAS_SIZE_Y; ++id) {
-                int choice = rnd.Next(indexes.Count);
-                randIndexes[id] = indexes[choice];
-                indexes.RemoveAt(choice);
-            }
-        }
-
-
-        int cntr = 0;
         void doSimulate() {
-
 
             // true random
             for (int id = 0; id < CANVAS_SIZE_X * CANVAS_SIZE_Y; ++id) {
@@ -253,20 +261,6 @@ namespace sand_box {
                 evaluatePixel(pt.X, pt.Y);
             }
 
-
-            /*
-            if (cntr++ > 500) {
-                initRandoms();
-                cntr = 0;
-            }
-
-            // now randomly chose a coord
-            for (int id = 0; id < CANVAS_SIZE_X * CANVAS_SIZE_Y; ++id) {
-                Point pt = randIndexes[id];
-                evaluatePixel(pt.X, pt.Y);
-            }
-
-            */
 
             /*
                 // to eliminate the artefacts caused by update direction
@@ -299,56 +293,48 @@ namespace sand_box {
                }*/
 
 
-            if (rnd.NextDouble() > 0.00005) {
-                Particle particle = new Particle();
-                particle.material = Material.SAND;
-                particle.wasUpdated = false;
+            if (checkBox1.Checked) {
 
-                canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.47), (int)(CANVAS_SIZE_X * 0.53)), 0] = particle;
-            }
+                if (rnd.NextDouble() > 0.00005) {
+                    Particle particle = new Particle();
+                    particle.material = Material.SAND;
+                    canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.47), (int)(CANVAS_SIZE_X * 0.53)), 0] = particle;
+                }
 
-            if (rnd.NextDouble() > 0.00005) {
-                Particle particle = new Particle();
-                particle.material = Material.SAND;
-                particle.wasUpdated = false;
-
-                canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.73), (int)(CANVAS_SIZE_X * 0.79)), 0] = particle;
-            }
+                if (rnd.NextDouble() > 0.00005) {
+                    Particle particle = new Particle();
+                    particle.material = Material.SAND_STEEP;
+                    canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.73), (int)(CANVAS_SIZE_X * 0.79)), 0] = particle;
+                }
 
 
-            if (rnd.NextDouble() > 0.00005) {
-                Particle particle = new Particle();
-                particle.material = Material.WATER;
-                particle.wasUpdated = false;
+                if (rnd.NextDouble() > 0.00005) {
+                    Particle particle = new Particle();
+                    particle.material = Material.WATER;
+                     canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.01), (int)(CANVAS_SIZE_X * 0.05)), 0] = particle;
+                }
 
-                canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.01), (int)(CANVAS_SIZE_X * 0.05)), 0] = particle;
-            }
+                if (rnd.NextDouble() > 0.00005) {
+                    Particle particle = new Particle();
+                    particle.material = Material.WATER;
+                    canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.01), (int)(CANVAS_SIZE_X * 0.05)), 0] = particle;
+                }
 
-            if (rnd.NextDouble() > 0.00005) {
-                Particle particle = new Particle();
-                particle.material = Material.WATER;
-                particle.wasUpdated = false;
+                if (rnd.NextDouble() > 0.00005) {
+                    Particle particle = new Particle();
+                    particle.material = Material.WATER;
+                    canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.85), (int)(CANVAS_SIZE_X * 0.89)), 0] = particle;
+                }
 
-                canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.01), (int)(CANVAS_SIZE_X * 0.05)), 0] = particle;
-            }
+                if (rnd.NextDouble() > 0.00005) {
+                    Particle particle = new Particle();
+                    particle.material = Material.WATER;
+                    canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.85), (int)(CANVAS_SIZE_X * 0.89)), 0] = particle;
+                }
 
-            if (rnd.NextDouble() > 0.00005) {
-                Particle particle = new Particle();
-                particle.material = Material.WATER;
-                particle.wasUpdated = false;
 
-                canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.85), (int)(CANVAS_SIZE_X * 0.89)), 0] = particle;
-            }
-
-            if (rnd.NextDouble() > 0.00005) {
-                Particle particle = new Particle();
-                particle.material = Material.WATER;
-                particle.wasUpdated = false;
-
-                canvas[rnd.Next((int)(CANVAS_SIZE_X * 0.85), (int)(CANVAS_SIZE_X * 0.89)), 0] = particle;
             }
         }
-
 
 
 
@@ -382,7 +368,6 @@ namespace sand_box {
             if (isCoordOnCanvas(pt.X, pt.Y)) {
                 Particle particle = new Particle();
                 particle.material = (Material)cBParticleType.SelectedIndex;
-                particle.wasUpdated = false;
 
                 canvas[pt.X, pt.Y] = particle;
 
